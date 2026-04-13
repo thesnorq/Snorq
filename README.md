@@ -1,68 +1,66 @@
-<div align="center">
+# Snorq
 
-<img src="https://capsule-render.vercel.app/api?type=slice&color=0:030501,50:1a2e00,100:84cc16&height=180&text=Snorq&fontSize=64&fontColor=d9f99d&fontAlignY=55&desc=AI%20Agent%20Skill%20for%20PumpFun%20Launch%20Scouting&descAlignY=75&descSize=15" width="100%"/>
+**AI agent skill for PumpFun launch scouting on Solana.**
 
-### `$SNRQ`
-
-[![Tests](https://github.com/snorqdevs/Snorq/actions/workflows/test.yml/badge.svg)](https://github.com/snorqdevs/Snorq/actions)
-[![Python](https://img.shields.io/badge/Python-3.10%2B-84cc16?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-d9f99d?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-374151?style=flat-square)](LICENSE)
-[![138 Tests](https://img.shields.io/badge/tests-138%20passed-22c55e?style=flat-square)]()
-
-</div>
+`$SNRQ` — `pip install snorq`
 
 ---
 
-Snorq is an AI agent skill layer for PumpFun on Solana. It wraps new token launch evaluation into a structured skill API that AI agents can call autonomously. Pass in a list of token candidates with your budget and risk tolerance — Snorq scores each one across four signals and returns a verdict: **PASS / WATCH / SCOUT / ENGAGE**, with a recommended position size.
+Most PumpFun tooling is built for humans watching a screen. Snorq is built for agents running in a loop.
 
-It's not a bot. It's a **skill** — a callable unit of intelligence designed to be composed inside larger agent frameworks.
+You pass in a list of token candidates — fresh launches from the PumpFun feed — along with your budget and risk tolerance. Snorq evaluates each one across four on-chain signals, computes a weighted score, and returns a structured verdict: **PASS**, **WATCH**, **SCOUT**, or **ENGAGE**. If the verdict is ENGAGE, you also get a recommended position size.
+
+No charts. No UI required. One function call in, one structured result out.
 
 ---
 
-## Skill Architecture
+## What it evaluates
+
+Every candidate is scored across four signals. The weights are fixed and intentional:
 
 ```
-SkillInput
-  ├─ candidates[]     → TokenCandidate list from PumpFun feed
-  ├─ budget_sol       → agent's available capital
-  ├─ risk_tolerance   → LOW / MEDIUM / HIGH
-  ├─ max_age_minutes  → filter stale launches
-  └─ min_holders      → filter ghost tokens
-        │
-        ▼
-  evaluate_candidate()
-    ├─ age_signal       → launch freshness  < 15 min   [weight: 30%]
-    ├─ momentum_signal  → SOL/min velocity  ≥ 0.5      [weight: 35%]
-    ├─ progress_signal  → bonding stage     < 40%      [weight: 20%]
-    └─ holder_signal    → real interest     ≥ 20       [weight: 15%]
-        │
-        ▼
-  compute_score() → 0–100
-        │
-        ▼
-  classify_verdict() → PASS / WATCH / SCOUT / ENGAGE
-        │
-        ▼
-  SkillOutput → top_pick + position_size_sol + reasoning
+age_signal        weight: 30%   — how long since launch?
+                                  < 5 min  → 100
+                                  < 15 min → 85
+                                  < 30 min → 60
+                                  < 60 min → 35
+                                  60+ min  → 10
+
+momentum_signal   weight: 35%   — SOL/min bonding curve velocity
+                                  score = min(sol_per_minute × 100, 100)
+                                  triggers at ≥ 0.5 SOL/min
+
+progress_signal   weight: 20%   — how early are we on the bonding curve?
+                                  score = max(0, 100 - bonding_progress_pct)
+                                  triggers at < 40% filled
+
+holder_signal     weight: 15%   — is there real interest, not just a deployer?
+                                  score = min((holders / 20) × 50, 100)
+                                  triggers at ≥ 20 holders
 ```
 
-## Verdict Table
+Weighted average of these four → final score 0–100.
 
-| Score | Verdict | Action |
-|---|---|---|
-| 0–25 | `PASS` | Skip entirely |
-| 26–50 | `WATCH` | Monitor, no position |
-| 51–75 | `SCOUT` | Investigate before committing |
-| 76–100 | `ENGAGE` | AI agent takes position |
+---
 
-ENGAGE threshold adjusts with risk tolerance: HIGH=65+, MEDIUM=76+, LOW=85+.
+## Verdicts
 
-## Install
-
-```bash
-pip install snorq
 ```
+0–25    PASS     skip entirely
+26–50   WATCH    monitor, no position
+51–75   SCOUT    investigate before committing
+76–100  ENGAGE   agent takes position
+```
+
+The ENGAGE threshold shifts based on risk tolerance:
+
+```
+LOW     ≥ 85    position = 25% of budget
+MEDIUM  ≥ 76    position = 50% of budget
+HIGH    ≥ 65    position = 80% of budget
+```
+
+---
 
 ## Usage
 
@@ -82,38 +80,64 @@ candidates = [
     ),
 ]
 
-skill_input = SkillInput(
+output = run_skill(SkillInput(
     candidates=candidates,
     budget_sol=2.0,
     risk_tolerance=RiskTolerance.MEDIUM,
-)
+))
 
-output = run_skill(skill_input)
-
-print(output.top_pick.verdict)           # ENGAGE
-print(output.top_pick.score)             # ~84.5
-print(output.top_pick.position_size_sol) # ~0.8450
-print(output.top_pick.reasoning)         # "Strong multi-signal..."
+print(output.top_pick.verdict)            # ENGAGE
+print(output.top_pick.score)              # ~84.5
+print(output.top_pick.position_size_sol)  # ~0.8450
+print(output.top_pick.reasoning)          # "Strong multi-signal confirmation..."
 ```
 
-## Run Tests
+The output is fully typed. Every field is a dataclass — no string parsing, no ambiguity. Designed to be consumed by the next step in an agent pipeline.
+
+---
+
+## Filters
+
+Before scoring, Snorq applies two hard filters:
+
+- `max_age_minutes` — tokens older than this are excluded entirely (default: 60)
+- `min_holders` — tokens with fewer holders are excluded (default: 10)
+
+This removes ghost tokens — single-wallet deploys with zero organic interest — before they pollute the verdict pool. Most new PumpFun launches never pass these filters. That's the point.
+
+---
+
+## Install
+
+```bash
+pip install snorq
+```
+
+No external dependencies. The core engine is pure Python 3.10+.
+
+---
+
+## Tests
 
 ```bash
 pip install -e ".[dev]"
 pytest tests/ -v
-# 138 tests — signals, scorer, skill, models, helpers
 ```
+
+138 tests. Signals, scorer boundaries, skill filters, position sizing, helpers — every assumption is tested individually. If you change a threshold, the tests tell you exactly what breaks.
+
+---
 
 ## Dashboard
 
 ```bash
-cd dashboard
-npm install
-npm run dev
+cd dashboard && npm install && npm run dev
 # → http://localhost:5173
 ```
 
-Live dashboard scanning 6 mock candidates. Shows verdict card, signal breakdown, candidate list — updates every 4 seconds.
+Runs a mock scan of 6 candidates updating every 4 seconds. Verdict cards, signal breakdown with weights, candidate list with live selection. Dark lime theme. TypeScript React.
+
+---
 
 ## Docker
 
@@ -123,6 +147,26 @@ docker compose up
 
 ---
 
-<div align="center">
+## Why momentum gets 35%
+
+Price on PumpFun is almost entirely bonding curve mechanics. If a token is filling at 0.8–1.0 SOL/min in the first 10 minutes, something real is happening. Below 0.1 SOL/min at minute 20, it's already dead.
+
+Velocity is the signal. Everything else is context. The weight reflects that.
+
+---
+
+## Design philosophy
+
+Snorq is a **skill** — a callable unit of intelligence designed to be composed inside larger agent frameworks. It doesn't manage state. It doesn't poll. It doesn't maintain a connection.
+
+You call it. It decides. You act.
+
+```
+SkillInput → run_skill() → SkillOutput
+```
+
+That's the entire surface area. Keep it composable.
+
+---
+
 <sub>built by snorqdev · pumpsniff · agentskill</sub>
-</div>
