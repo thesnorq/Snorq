@@ -2,7 +2,7 @@
 
 **AI agent skill for PumpFun launch scouting on Solana.**
 
-`$SNRQ` — `pip install snorq`
+`$SNORQ` — `pip install snorq`
 
 ---
 
